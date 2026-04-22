@@ -861,6 +861,23 @@ impl SiteExplorer {
         // per-host override is declared; a per-host `NicMode` or `NoDpu`
         // always wins.
         let site_force_nic_mode = self.config.force_dpu_nic_mode.load(Ordering::Relaxed);
+        if site_force_nic_mode {
+            tracing::warn!(
+                "site-wide force_dpu_nic_mode is enabled, will not use per-host DPU mode"
+            );
+            return Ok(explored_hosts
+                .values()
+                .map(|ep| {
+                    (
+                        ExploredManagedHost {
+                            host_bmc_ip: ep.address,
+                            dpus: vec![],
+                        },
+                        ep.report.clone(),
+                    )
+                })
+                .collect());
+        }
         let effective_mode = |host_bmc_ip: &IpAddr| -> DpuMode {
             let declared = expected_explored_endpoint_index
                 .matched_expected_machine(host_bmc_ip)

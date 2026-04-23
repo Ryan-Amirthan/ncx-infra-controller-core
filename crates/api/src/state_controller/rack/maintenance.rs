@@ -25,11 +25,11 @@ use db::{
 };
 use librms::protos::rack_manager as rms;
 use model::rack::{
-    FirmwareUpgradeDeviceInfo, FirmwareUpgradeDeviceStatus, FirmwareUpgradeState,
-    MaintenanceActivity, MaintenanceScope, NvosUpdateJob, NvosUpdateState, NvosUpdateSwitchStatus,
-    Rack, RackFirmwareUpgradeState, RackFirmwareUpgradeStatus, RackMaintenanceState,
-    RackPowerState, RackState, RackValidationState, ResolvedNvosArtifact, SwitchNvosUpdateState,
-    SwitchNvosUpdateStatus,
+    ConfigureNmxClusterState, FirmwareUpgradeDeviceInfo, FirmwareUpgradeDeviceStatus,
+    FirmwareUpgradeState, MaintenanceActivity, MaintenanceScope, NvosUpdateJob, NvosUpdateState,
+    NvosUpdateSwitchStatus, Rack, RackFirmwareUpgradeState, RackFirmwareUpgradeStatus,
+    RackMaintenanceState, RackPowerState, RackState, RackValidationState, ResolvedNvosArtifact,
+    SwitchNvosUpdateState, SwitchNvosUpdateStatus,
 };
 use model::rack_firmware::{RackFirmware, RackFirmwareSearchFilter};
 use model::rack_type::RackHardwareType;
@@ -290,7 +290,9 @@ async fn clear_maintenance_requested_on_error(
 /// activities not requested in the scope.
 fn next_state_after_firmware(scope: &MaintenanceScope) -> RackMaintenanceState {
     if scope.should_run(&MaintenanceActivity::ConfigureNmxCluster) {
-        RackMaintenanceState::ConfigureNmxCluster
+        RackMaintenanceState::ConfigureNmxCluster {
+            configure_nmx_cluster: ConfigureNmxClusterState::Start,
+        }
     } else {
         next_state_after_configure(scope)
     }
@@ -1433,199 +1435,241 @@ pub async fn handle_maintenance(
                 .with_txn(txn))
             }
         },
-        RackMaintenanceState::ConfigureNmxCluster => {
-            let Some(rms_client) = ctx.services.rms_client.as_ref() else {
-                return transition_to_rack_error(id, state, "RMS client not configured", ctx).await;
-            };
-            let switch_inventory = load_rack_switch_firmware_inventory(
-                &ctx.services.db_pool,
-                ctx.services.credential_manager.as_ref(),
-                id,
-            )
-            .await
-            .map_err(|error| {
-                StateHandlerError::GenericError(eyre::eyre!(
-                    "failed to load rack switch firmware inventory for ConfigureNmxCluster: {}",
-                    error
-                ))
-            })?;
-
-            if switch_inventory.switches.is_empty() {
-                return Ok(skip_configure_nmx_cluster_outcome(
+        RackMaintenanceState::ConfigureNmxCluster {
+            configure_nmx_cluster,
+        } => match configure_nmx_cluster {
+            ConfigureNmxClusterState::Start => {
+                let Some(rms_client) = ctx.services.rms_client.as_ref() else {
+                    return transition_to_rack_error(id, state, "RMS client not configured", ctx)
+                        .await;
+                };
+                let switch_inventory = load_rack_switch_firmware_inventory(
+                    &ctx.services.db_pool,
+                    ctx.services.credential_manager.as_ref(),
                     id,
-                    "rack has no switches in inventory",
-                    scope,
-                ));
-            }
-
-            if let Err(cause) =
-                validate_switch_inventory_for_nmx_cluster(&switch_inventory.switches)
-            {
-                return transition_to_rack_error(id, state, cause, ctx).await;
-            }
-
-            let rack_profile_label = rack_profile_id
-                .map(|profile_id| profile_id.to_string())
-                .unwrap_or_else(|| "<none>".to_string());
-            let Some(profile) = super::resolve_profile(id, rack_profile_id, ctx) else {
-                return transition_to_rack_error(
-                    id,
-                    state,
-                    format!(
-                        "rack profile '{}' is missing or unknown; cannot resolve rack_hardware_topology",
-                        rack_profile_label
-                    ),
-                    ctx,
                 )
-                .await;
-            };
-            let Some(rack_hardware_topology) = profile.rack_hardware_topology else {
-                return transition_to_rack_error(
-                    id,
-                    state,
-                    format!(
-                        "rack profile '{}' does not define rack_hardware_topology",
-                        rack_profile_label
-                    ),
-                    ctx,
-                )
-                .await;
-            };
-
-            let response = match rms_client
-                .get_device_info_by_device_list(build_switch_device_info_request(
-                    id,
-                    &switch_inventory.switches,
-                ))
                 .await
-            {
-                Ok(response) => response,
-                Err(error) => {
-                    return transition_to_rack_error(
+                .map_err(|error| {
+                    StateHandlerError::GenericError(eyre::eyre!(
+                        "failed to load rack switch firmware inventory for ConfigureNmxCluster: {}",
+                        error
+                    ))
+                })?;
+
+                if switch_inventory.switches.is_empty() {
+                    return Ok(skip_configure_nmx_cluster_outcome(
                         id,
-                        state,
-                        format!("RMS GetDeviceInfoByDeviceList failed: {}", error),
-                        ctx,
-                    )
-                    .await;
+                        "rack has no switches in inventory",
+                        scope,
+                    ));
                 }
-            };
-            let primary_switch = match select_primary_switch(&switch_inventory.switches, &response)
-            {
-                Ok(primary_switch) => primary_switch,
-                Err(cause) => return transition_to_rack_error(id, state, cause, ctx).await,
-            };
-            {
-                let mut txn = ctx.services.db_pool.begin().await?;
+
                 if let Err(cause) =
-                    persist_primary_switch(txn.as_mut(), id, &primary_switch.device.node_id).await
+                    validate_switch_inventory_for_nmx_cluster(&switch_inventory.switches)
                 {
-                    drop(txn);
                     return transition_to_rack_error(id, state, cause, ctx).await;
                 }
-                txn.commit().await?;
-            }
 
-            let topology_type = rack_hardware_topology.to_string();
-            tracing::info!(
-                rack_id = %id,
-                primary_switch = %primary_switch.device.node_id,
-                tray_index = primary_switch.tray_index,
-                slot_number = primary_switch.slot_number,
-                topology_type = %topology_type,
-                switch_count = switch_inventory.switches.len(),
-                "Configuring NMX cluster on primary switch"
-            );
-            let response = match rms_client
-                .configure_scale_up_fabric_manager(rms::ConfigureScaleUpFabricManagerRequest {
-                    device: Some(build_new_node_info(
-                        id,
-                        &primary_switch.device,
-                        rms::NodeType::Switch,
-                    )),
-                    topology_type: topology_type.clone(),
-                    verify_ssl: false,
-                    ..Default::default()
-                })
-                .await
-            {
-                Ok(response) => response,
-                Err(error) => {
+                let rack_profile_label = rack_profile_id
+                    .map(|profile_id| profile_id.to_string())
+                    .unwrap_or_else(|| "<none>".to_string());
+                let Some(profile) = super::resolve_profile(id, rack_profile_id, ctx) else {
                     return transition_to_rack_error(
                         id,
                         state,
                         format!(
-                            "RMS ConfigureScaleUpFabricManager failed for switch {}: {}",
-                            primary_switch.device.node_id, error
+                            "rack profile '{}' is missing or unknown; cannot resolve rack_hardware_topology",
+                            rack_profile_label
                         ),
                         ctx,
                     )
                     .await;
-                }
-            };
-
-            if response.status != rms::ReturnCode::Success as i32 {
-                let message = if response.message.trim().is_empty() {
-                    "no error details provided".to_string()
-                } else {
-                    response.message
                 };
-                return transition_to_rack_error(
-                    id,
-                    state,
-                    format!(
-                        "RMS ConfigureScaleUpFabricManager failed for switch {}: {}",
-                        primary_switch.device.node_id, message
-                    ),
-                    ctx,
-                )
-                .await;
-            }
+                let Some(rack_hardware_topology) = profile.rack_hardware_topology else {
+                    return transition_to_rack_error(
+                        id,
+                        state,
+                        format!(
+                            "rack profile '{}' does not define rack_hardware_topology",
+                            rack_profile_label
+                        ),
+                        ctx,
+                    )
+                    .await;
+                };
 
-            let fabric_status_response = match get_scale_up_fabric_services_status(
-                &ctx.services.site_config.rms,
-                id,
-                &switch_inventory.switches,
-            )
-            .await
-            {
-                Ok(response) => response,
-                Err(cause) => return transition_to_rack_error(id, state, cause, ctx).await,
-            };
-            let mut txn = ctx.services.db_pool.begin().await?;
-            if let Err(cause) = persist_fabric_manager_statuses(
-                txn.as_mut(),
-                id,
-                &switch_inventory.switches,
-                &fabric_status_response,
-            )
-            .await
-            {
-                drop(txn);
-                return transition_to_rack_error(id, state, cause, ctx).await;
+                let response = match rms_client
+                    .get_device_info_by_device_list(build_switch_device_info_request(
+                        id,
+                        &switch_inventory.switches,
+                    ))
+                    .await
+                {
+                    Ok(response) => response,
+                    Err(error) => {
+                        return transition_to_rack_error(
+                            id,
+                            state,
+                            format!("RMS GetDeviceInfoByDeviceList failed: {}", error),
+                            ctx,
+                        )
+                        .await;
+                    }
+                };
+                let primary_switch =
+                    match select_primary_switch(&switch_inventory.switches, &response) {
+                        Ok(primary_switch) => primary_switch,
+                        Err(cause) => return transition_to_rack_error(id, state, cause, ctx).await,
+                    };
+                {
+                    let mut txn = ctx.services.db_pool.begin().await?;
+                    if let Err(cause) =
+                        persist_primary_switch(txn.as_mut(), id, &primary_switch.device.node_id)
+                            .await
+                    {
+                        drop(txn);
+                        return transition_to_rack_error(id, state, cause, ctx).await;
+                    }
+                    txn.commit().await?;
+                }
+
+                let topology_type = rack_hardware_topology.to_string();
+                tracing::info!(
+                    rack_id = %id,
+                    primary_switch = %primary_switch.device.node_id,
+                    tray_index = primary_switch.tray_index,
+                    slot_number = primary_switch.slot_number,
+                    topology_type = %topology_type,
+                    switch_count = switch_inventory.switches.len(),
+                    "Configuring NMX cluster on primary switch"
+                );
+                let response = match rms_client
+                    .configure_scale_up_fabric_manager(rms::ConfigureScaleUpFabricManagerRequest {
+                        device: Some(build_new_node_info(
+                            id,
+                            &primary_switch.device,
+                            rms::NodeType::Switch,
+                        )),
+                        topology_type: topology_type.clone(),
+                        verify_ssl: false,
+                        ..Default::default()
+                    })
+                    .await
+                {
+                    Ok(response) => response,
+                    Err(error) => {
+                        tracing::error!(
+                            rack_id = %id,
+                            primary_switch = %primary_switch.device.node_id,
+                            error = %error,
+                            "RMS ConfigureScaleUpFabricManager failed for switch, continuing",
+                        );
+                        return Ok(StateHandlerOutcome::transition(RackState::Maintenance {
+                            maintenance_state: RackMaintenanceState::ConfigureNmxCluster {
+                                configure_nmx_cluster:
+                                    ConfigureNmxClusterState::WaitForFabricStatus,
+                            },
+                        }));
+                    }
+                };
+
+                if response.status != rms::ReturnCode::Success as i32 {
+                    let message = if response.message.trim().is_empty() {
+                        "no error details provided".to_string()
+                    } else {
+                        response.message
+                    };
+                    tracing::error!(
+                        rack_id = %id,
+                        primary_switch = %primary_switch.device.node_id,
+                        message = %message,
+                        "RMS ConfigureScaleUpFabricManager failed for switch, advancing to WaitForFabricStatus",
+                    );
+                    return Ok(StateHandlerOutcome::transition(RackState::Maintenance {
+                        maintenance_state: RackMaintenanceState::ConfigureNmxCluster {
+                            configure_nmx_cluster: ConfigureNmxClusterState::WaitForFabricStatus,
+                        },
+                    }));
+                }
+
+                tracing::info!(
+                    rack_id = %id,
+                    primary_switch = %primary_switch.device.node_id,
+                    tray_index = primary_switch.tray_index,
+                    slot_number = primary_switch.slot_number,
+                    topology_type = %topology_type,
+                    topology_used = %if response.topology_used.is_empty() {
+                        topology_type.clone()
+                    } else {
+                        response.topology_used.clone()
+                    },
+                    scale_up_fabric_state_enabled = response.scale_up_fabric_state_enabled,
+                    grpc_enabled = response.grpc_enabled,
+                    "ConfigureScaleUpFabricManager succeeded; advancing to WaitForFabricStatus"
+                );
+                Ok(StateHandlerOutcome::transition(RackState::Maintenance {
+                    maintenance_state: RackMaintenanceState::ConfigureNmxCluster {
+                        configure_nmx_cluster: ConfigureNmxClusterState::WaitForFabricStatus,
+                    },
+                }))
             }
-            let next = next_state_after_configure(scope);
-            tracing::info!(
-                rack_id = %id,
-                primary_switch = %primary_switch.device.node_id,
-                tray_index = primary_switch.tray_index,
-                slot_number = primary_switch.slot_number,
-                topology_type = %topology_type,
-                topology_used = %if response.topology_used.is_empty() {
-                    topology_type.clone()
-                } else {
-                    response.topology_used.clone()
-                },
-                scale_up_fabric_state_enabled = response.scale_up_fabric_state_enabled,
-                grpc_enabled = response.grpc_enabled,
-                next_state = %next,
-                "Rack ConfigureNmxCluster complete, FabricManager status persisted, advancing"
-            );
-            Ok(StateHandlerOutcome::transition(RackState::Maintenance {
-                maintenance_state: next,
-            })
-            .with_txn(txn))
-        }
+            ConfigureNmxClusterState::WaitForFabricStatus => {
+                let switch_inventory = load_rack_switch_firmware_inventory(
+                    &ctx.services.db_pool,
+                    ctx.services.credential_manager.as_ref(),
+                    id,
+                )
+                .await
+                .map_err(|error| {
+                    StateHandlerError::GenericError(eyre::eyre!(
+                        "failed to load rack switch firmware inventory for WaitForFabricStatus: {}",
+                        error
+                    ))
+                })?;
+
+                if switch_inventory.switches.is_empty() {
+                    return Ok(skip_configure_nmx_cluster_outcome(
+                        id,
+                        "rack has no switches in inventory",
+                        scope,
+                    ));
+                }
+
+                let fabric_status_response = match get_scale_up_fabric_services_status(
+                    &ctx.services.site_config.rms,
+                    id,
+                    &switch_inventory.switches,
+                )
+                .await
+                {
+                    Ok(response) => response,
+                    Err(cause) => return transition_to_rack_error(id, state, cause, ctx).await,
+                };
+                let mut txn = ctx.services.db_pool.begin().await?;
+                if let Err(cause) = persist_fabric_manager_statuses(
+                    txn.as_mut(),
+                    id,
+                    &switch_inventory.switches,
+                    &fabric_status_response,
+                )
+                .await
+                {
+                    drop(txn);
+                    return transition_to_rack_error(id, state, cause, ctx).await;
+                }
+                let next = next_state_after_configure(scope);
+                tracing::info!(
+                    rack_id = %id,
+                    switch_count = switch_inventory.switches.len(),
+                    next_state = %next,
+                    "WaitForFabricStatus complete, FabricManager status persisted, advancing"
+                );
+                Ok(StateHandlerOutcome::transition(RackState::Maintenance {
+                    maintenance_state: next,
+                })
+                .with_txn(txn))
+            }
+        },
         RackMaintenanceState::PowerSequence { rack_power } => match rack_power {
             RackPowerState::PoweringOn => {
                 tracing::info!("Rack {} power sequence (on) - stubbed", id);
@@ -1673,8 +1717,8 @@ pub async fn handle_maintenance(
 #[cfg(test)]
 mod tests {
     use model::rack::{
-        FirmwareUpgradeDeviceInfo, FirmwareUpgradeState, MaintenanceActivity, MaintenanceScope,
-        RackMaintenanceState, RackPowerState,
+        ConfigureNmxClusterState, FirmwareUpgradeDeviceInfo, FirmwareUpgradeState,
+        MaintenanceActivity, MaintenanceScope, RackMaintenanceState, RackPowerState,
     };
 
     use super::{
@@ -1743,7 +1787,9 @@ mod tests {
         };
         assert_eq!(
             first_maintenance_state(&scope),
-            RackMaintenanceState::ConfigureNmxCluster,
+            RackMaintenanceState::ConfigureNmxCluster {
+                configure_nmx_cluster: ConfigureNmxClusterState::Start,
+            },
         );
     }
 
@@ -1772,7 +1818,9 @@ mod tests {
         };
         assert_eq!(
             first_maintenance_state(&scope),
-            RackMaintenanceState::ConfigureNmxCluster,
+            RackMaintenanceState::ConfigureNmxCluster {
+                configure_nmx_cluster: ConfigureNmxClusterState::Start,
+            },
         );
     }
 
@@ -1783,7 +1831,9 @@ mod tests {
         let scope = MaintenanceScope::default();
         assert_eq!(
             next_state_after_firmware(&scope),
-            RackMaintenanceState::ConfigureNmxCluster,
+            RackMaintenanceState::ConfigureNmxCluster {
+                configure_nmx_cluster: ConfigureNmxClusterState::Start,
+            },
         );
     }
 

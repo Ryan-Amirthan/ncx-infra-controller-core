@@ -1437,7 +1437,7 @@ pub async fn handle_maintenance(
             let Some(rms_client) = ctx.services.rms_client.as_ref() else {
                 return transition_to_rack_error(id, state, "RMS client not configured", ctx).await;
             };
-            let mut switch_inventory = load_rack_switch_firmware_inventory(
+            let switch_inventory = load_rack_switch_firmware_inventory(
                 &ctx.services.db_pool,
                 ctx.services.credential_manager.as_ref(),
                 id,
@@ -1449,24 +1449,6 @@ pub async fn handle_maintenance(
                     error
                 ))
             })?;
-            if !scope.is_full_rack() {
-                if scope.switch_ids.is_empty() {
-                    switch_inventory.switch_ids.clear();
-                    switch_inventory.switches.clear();
-                } else {
-                    let allowed: std::collections::HashSet<_> = scope.switch_ids.iter().collect();
-                    switch_inventory
-                        .switch_ids
-                        .retain(|switch_id| allowed.contains(switch_id));
-                    switch_inventory.switches.retain(|device| match device
-                        .node_id
-                        .parse::<carbide_uuid::switch::SwitchId>(
-                    ) {
-                        Ok(ref switch_id) => allowed.contains(switch_id),
-                        Err(_) => false,
-                    });
-                }
-            }
 
             if switch_inventory.switches.is_empty() {
                 return Ok(skip_configure_nmx_cluster_outcome(

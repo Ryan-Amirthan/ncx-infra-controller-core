@@ -28,7 +28,7 @@ use model::machine::ManagedHostState;
 use model::machine::machine_search_config::MachineSearchConfig;
 use model::rack::{
     ConfigureNmxClusterState, FirmwareUpgradeState, NvosUpdateState, Rack, RackConfig,
-    RackMaintenanceState, RackState, RackValidationState, ResolvedNvosArtifact,
+    RackMaintenanceState, RackState, RackValidationState,
 };
 use rpc::forge::StateHistoryRecord;
 use rpc::forge::forge_server::Forge;
@@ -98,12 +98,7 @@ impl StateHandler for TestRackStateHandler {
                 RackMaintenanceState::FirmwareUpgrade { .. } => RackState::Maintenance {
                     maintenance_state: RackMaintenanceState::NVOSUpdate {
                         nvos_update: NvosUpdateState::Start {
-                            artifact: ResolvedNvosArtifact {
-                                firmware_id: "test-firmware".to_string(),
-                                image_filename: "test-nvos.bin".to_string(),
-                                local_file_path: "/tmp/test-nvos.bin".to_string(),
-                                version: Some("test-version".to_string()),
-                            },
+                            rack_firmware_id: None,
                         },
                     },
                 },

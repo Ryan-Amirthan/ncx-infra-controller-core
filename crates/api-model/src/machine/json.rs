@@ -106,6 +106,8 @@ pub struct MachineSnapshotPgJson {
     pub nvlink_info: Option<MachineNvLinkInfo>,
     pub dpf: Dpf,
     #[serde(default)]
+    pub host_profile: HostProfile,
+    #[serde(default)]
     pub rack_fw_details: Option<RackFirmwareUpgradeStatus>,
     #[serde(default)]
     pub slot_number: Option<i32>,
@@ -220,6 +222,7 @@ impl TryFrom<MachineSnapshotPgJson> for Machine {
             update_complete: value.update_complete,
             nvlink_info: value.nvlink_info,
             dpf: value.dpf,
+            host_profile: value.host_profile,
             rack_fw_details: value.rack_fw_details,
             slot_number: value.slot_number,
             tray_index: value.tray_index,

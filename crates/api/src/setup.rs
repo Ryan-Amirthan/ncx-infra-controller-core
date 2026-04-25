@@ -26,7 +26,7 @@ use carbide_ipmi::IPMITool;
 use carbide_preingestion_manager::PreingestionManager;
 use carbide_redfish::libredfish::RedfishClientPool;
 use carbide_redfish::nv_redfish::NvRedfishClientPool;
-use carbide_site_explorer::{BmcEndpointExplorer, SiteExplorer};
+use carbide_site_explorer::SiteExplorer;
 use db::machine::update_dpu_asns;
 use db::resource_pool::DefineResourcePoolError;
 use db::{Transaction, work_lock_manager};
@@ -46,6 +46,7 @@ use model::route_server::RouteServerSourceType;
 use opentelemetry::metrics::Meter;
 use sqlx::postgres::PgSslMode;
 use sqlx::{ConnectOptions, PgPool};
+use sqlx_query_tracing::SQLX_STATEMENTS_LOG_LEVEL;
 use tokio::sync::Semaphore;
 use tokio::sync::oneshot::Sender;
 use tokio::task::JoinSet;
@@ -67,7 +68,6 @@ use crate::logging::log_limiter::LogLimiter;
 use crate::logging::service_health_metrics::{
     ServiceHealthContext, start_export_service_health_metrics,
 };
-use crate::logging::sqlx_query_tracing::SQLX_STATEMENTS_LOG_LEVEL;
 use crate::machine_update_manager::MachineUpdateManager;
 use crate::measured_boot::metrics_collector::MeasuredBootMetricsCollector;
 use crate::mqtt_state_change_hook::hook::MqttStateChangeHook;
@@ -377,7 +377,7 @@ pub async fn start_api(
         ListenMode::PlaintextHttp2 => ApiListenMode::PlaintextHttp2,
     };
 
-    let bmc_explorer = Arc::new(BmcEndpointExplorer::new(
+    let bmc_explorer = carbide_site_explorer::new_bmc_explorer(
         shared_redfish_pool.clone(),
         shared_nv_redfish_pool,
         ipmi_tool.clone(),
@@ -387,7 +387,7 @@ pub async fn start_api(
             .rotate_switch_nvos_credentials
             .clone(),
         carbide_config.site_explorer.explore_mode,
-    ));
+    );
 
     let nvlink_config = carbide_config.nvlink_config.clone().unwrap_or_default();
 

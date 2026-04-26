@@ -35,9 +35,9 @@ use model::rack_firmware::{RackFirmware, RackFirmwareSearchFilter};
 use model::rack_type::RackHardwareType;
 
 use crate::rack::firmware_update::{
-    RackFirmwareInventory, build_firmware_update_batches, build_new_node_info,
-    firmware_type_for_profile, load_rack_firmware_inventory, load_rack_switch_firmware_inventory,
-    submit_firmware_update_batches,
+    RackFirmwareInventory, RackSwitchFirmwareInventory, build_firmware_update_batches,
+    build_new_node_info, firmware_type_for_profile, load_rack_firmware_inventory,
+    load_rack_switch_firmware_inventory, submit_firmware_update_batches,
 };
 use crate::rack::rms_client::SwitchSystemImageRmsClient;
 use crate::state_controller::rack::context::RackStateHandlerContextObjects;
@@ -434,6 +434,31 @@ fn filter_inventory_by_scope(
                 Err(_) => false,
             }
         });
+    }
+
+    if scope.switch_ids.is_empty() {
+        inventory.switch_ids.clear();
+        inventory.switches.clear();
+    } else {
+        let allowed: std::collections::HashSet<_> = scope.switch_ids.iter().collect();
+        inventory.switch_ids.retain(|id| allowed.contains(id));
+        inventory.switches.retain(
+            |d| match d.node_id.parse::<carbide_uuid::switch::SwitchId>() {
+                Ok(ref id) => allowed.contains(id),
+                Err(_) => false,
+            },
+        );
+    }
+
+    inventory
+}
+
+fn filter_switch_inventory_by_scope(
+    mut inventory: RackSwitchFirmwareInventory,
+    scope: &MaintenanceScope,
+) -> RackSwitchFirmwareInventory {
+    if scope.is_full_rack() {
+        return inventory;
     }
 
     if scope.switch_ids.is_empty() {
@@ -1292,7 +1317,7 @@ pub async fn handle_maintenance(
                 }
 
                 db_rack::update_firmware_upgrade_job(txn.as_mut(), id, None).await?;
-                state.firmware_upgrade_job = None;
+                // state.firmware_upgrade_job = None;
 
                 let next_maintenance_state = if nvos_update_requested(scope) {
                     let next = next_state_after_firmware(scope);
@@ -1498,7 +1523,7 @@ pub async fn handle_maintenance(
                     if let Some(switch_id) = db_switch::find_ids(
                         txn.as_mut(),
                         model::switch::SwitchSearchFilter {
-                            bmc_mac: Some(mac),
+                            nvos_mac: Some(mac),
                             rack_id: Some(id.clone()),
                             ..Default::default()
                         },
@@ -1514,6 +1539,11 @@ pub async fn handle_maintenance(
                             Some(&nvos_status),
                         )
                         .await?;
+                    } else {
+                        tracing::error!(
+                            "switch {} not found in database for NVOS update",
+                            switch.mac
+                        );
                     }
                 }
 
@@ -1586,6 +1616,7 @@ pub async fn handle_maintenance(
                         error
                     ))
                 })?;
+                let switch_inventory = filter_switch_inventory_by_scope(switch_inventory, scope);
 
                 if switch_inventory.switches.is_empty() {
                     return Ok(skip_configure_nmx_cluster_outcome(
@@ -1757,6 +1788,7 @@ pub async fn handle_maintenance(
                         error
                     ))
                 })?;
+                let switch_inventory = filter_switch_inventory_by_scope(switch_inventory, scope);
 
                 if switch_inventory.switches.is_empty() {
                     return Ok(skip_configure_nmx_cluster_outcome(

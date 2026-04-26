@@ -27,10 +27,9 @@ use librms::protos::rack_manager as rms;
 use model::expected_machine::ExpectedMachineData;
 use model::expected_rack::ExpectedRack;
 use model::rack::{
-    ConfigureNmxClusterState, FirmwareUpgradeDeviceStatus, FirmwareUpgradeJob,
-    FirmwareUpgradeState, MaintenanceActivity, MaintenanceScope, NvosUpdateState,
-    NvosUpdateSwitchStatus, Rack, RackConfig, RackFirmwareUpgradeState, RackMaintenanceState,
-    RackPowerState, RackState, RackValidationState,
+    FirmwareUpgradeDeviceStatus, FirmwareUpgradeJob, FirmwareUpgradeState, MaintenanceActivity,
+    MaintenanceScope, NvosUpdateState, NvosUpdateSwitchStatus, Rack, RackConfig,
+    RackFirmwareUpgradeState, RackMaintenanceState, RackPowerState, RackState, RackValidationState,
 };
 use model::rack_type::{
     RackCapabilitiesSet, RackCapabilityCompute, RackCapabilityPowerShelf, RackCapabilitySwitch,
@@ -1216,11 +1215,12 @@ async fn test_ready_with_no_labels_stays_ready(
     Ok(())
 }
 
-/// test_firmware_upgrade_start_without_default_skips_to_configure_nmx_cluster
+/// test_firmware_upgrade_start_without_default_advances_to_nvos_update
 /// verifies that maintenance skips firmware flashing when no default firmware
-/// exists for the rack hardware type.
+/// exists for the rack hardware type and continues through NVOS update before
+/// ConfigureNmxCluster.
 #[crate::sqlx_test]
-async fn test_firmware_upgrade_start_without_default_skips_to_configure_nmx_cluster(
+async fn test_firmware_upgrade_start_without_default_advances_to_nvos_update(
     pool: sqlx::PgPool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let env = create_test_env_with_overrides(
@@ -1262,12 +1262,14 @@ async fn test_firmware_upgrade_start_without_default_skips_to_configure_nmx_clus
                 matches!(
                     next_state,
                     RackState::Maintenance {
-                        maintenance_state: RackMaintenanceState::ConfigureNmxCluster {
-                            configure_nmx_cluster: ConfigureNmxClusterState::Start,
+                        maintenance_state: RackMaintenanceState::NVOSUpdate {
+                            nvos_update: NvosUpdateState::Start {
+                                rack_firmware_id: None,
+                            },
                         },
                     }
                 ),
-                "FirmwareUpgrade(Start) should skip to ConfigureNmxCluster, got {:?}",
+                "FirmwareUpgrade(Start) should skip firmware and advance to NVOSUpdate, got {:?}",
                 next_state
             );
         }
@@ -1290,11 +1292,12 @@ async fn test_firmware_upgrade_start_without_default_skips_to_configure_nmx_clus
     Ok(())
 }
 
-/// test_firmware_upgrade_start_with_unavailable_default_skips_to_configure_nmx_cluster
+/// test_firmware_upgrade_start_with_unavailable_default_advances_to_nvos_update
 /// verifies that maintenance skips firmware flashing when a default firmware
-/// exists for the hardware type but is not yet available.
+/// exists for the hardware type but is not yet available, then continues
+/// through NVOS update before ConfigureNmxCluster.
 #[crate::sqlx_test]
-async fn test_firmware_upgrade_start_with_unavailable_default_skips_to_configure_nmx_cluster(
+async fn test_firmware_upgrade_start_with_unavailable_default_advances_to_nvos_update(
     pool: sqlx::PgPool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let env = create_test_env_with_overrides(
@@ -1343,12 +1346,14 @@ async fn test_firmware_upgrade_start_with_unavailable_default_skips_to_configure
                 matches!(
                     next_state,
                     RackState::Maintenance {
-                        maintenance_state: RackMaintenanceState::ConfigureNmxCluster {
-                            configure_nmx_cluster: ConfigureNmxClusterState::Start,
+                        maintenance_state: RackMaintenanceState::NVOSUpdate {
+                            nvos_update: NvosUpdateState::Start {
+                                rack_firmware_id: None,
+                            },
                         },
                     }
                 ),
-                "FirmwareUpgrade(Start) should skip to ConfigureNmxCluster when default firmware is unavailable, got {:?}",
+                "FirmwareUpgrade(Start) should skip unavailable firmware and advance to NVOSUpdate, got {:?}",
                 next_state
             );
         }

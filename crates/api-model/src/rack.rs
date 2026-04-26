@@ -514,10 +514,7 @@ impl Display for FirmwareUpgradeState {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NvosUpdateState {
-    Start {
-        #[serde(default)]
-        rack_firmware_id: Option<String>,
-    },
+    Start { rack_firmware_id: Option<String> },
     WaitForComplete,
 }
 
@@ -682,7 +679,6 @@ pub enum MaintenanceActivity {
     NvosUpdate {
         /// Rack firmware entry containing the switch system image to install.
         /// `None` means the default rack firmware for the rack is used.
-        #[serde(default)]
         rack_firmware_id: Option<String>,
     },
     ConfigureNmxCluster,

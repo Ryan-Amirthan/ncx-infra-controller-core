@@ -447,18 +447,20 @@ async fn test_on_demand_rack_maintenance_schedules_nvos_only_scope(
         env.api.as_ref(),
         Request::new(rpc::forge::RackMaintenanceOnDemandRequest {
             rack_id: Some(rack_id.clone()),
-            machine_ids: vec![],
-            switch_ids: vec![switch_id.to_string()],
-            power_shelf_ids: vec![],
-            activities: vec![rpc::forge::MaintenanceActivityConfig {
-                activity: Some(
-                    rpc::forge::maintenance_activity_config::Activity::NvosUpdate(
-                        rpc::forge::NvosUpdateActivity {
-                            rack_firmware_id: "fw-nvos".to_string(),
-                        },
+            scope: Some(rpc::forge::RackMaintenanceScope {
+                machine_ids: vec![],
+                switch_ids: vec![switch_id.to_string()],
+                power_shelf_ids: vec![],
+                activities: vec![rpc::forge::MaintenanceActivityConfig {
+                    activity: Some(
+                        rpc::forge::maintenance_activity_config::Activity::NvosUpdate(
+                            rpc::forge::NvosUpdateActivity {
+                                rack_firmware_id: "fw-nvos".to_string(),
+                            },
+                        ),
                     ),
-                ),
-            }],
+                }],
+            }),
         }),
     )
     .await?;
@@ -491,30 +493,32 @@ async fn test_on_demand_rack_maintenance_schedules_firmware_and_nvos_scope(
         env.api.as_ref(),
         Request::new(rpc::forge::RackMaintenanceOnDemandRequest {
             rack_id: Some(rack_id.clone()),
-            machine_ids: vec![],
-            switch_ids: vec![switch_id.to_string()],
-            power_shelf_ids: vec![],
-            activities: vec![
-                rpc::forge::MaintenanceActivityConfig {
-                    activity: Some(
-                        rpc::forge::maintenance_activity_config::Activity::FirmwareUpgrade(
-                            rpc::forge::FirmwareUpgradeActivity {
-                                firmware_version: "fw-mixed".to_string(),
-                                components: vec!["BMC".to_string()],
-                            },
+            scope: Some(rpc::forge::RackMaintenanceScope {
+                machine_ids: vec![],
+                switch_ids: vec![switch_id.to_string()],
+                power_shelf_ids: vec![],
+                activities: vec![
+                    rpc::forge::MaintenanceActivityConfig {
+                        activity: Some(
+                            rpc::forge::maintenance_activity_config::Activity::FirmwareUpgrade(
+                                rpc::forge::FirmwareUpgradeActivity {
+                                    firmware_version: "fw-mixed".to_string(),
+                                    components: vec!["BMC".to_string()],
+                                },
+                            ),
                         ),
-                    ),
-                },
-                rpc::forge::MaintenanceActivityConfig {
-                    activity: Some(
-                        rpc::forge::maintenance_activity_config::Activity::NvosUpdate(
-                            rpc::forge::NvosUpdateActivity {
-                                rack_firmware_id: "fw-mixed".to_string(),
-                            },
+                    },
+                    rpc::forge::MaintenanceActivityConfig {
+                        activity: Some(
+                            rpc::forge::maintenance_activity_config::Activity::NvosUpdate(
+                                rpc::forge::NvosUpdateActivity {
+                                    rack_firmware_id: "fw-mixed".to_string(),
+                                },
+                            ),
                         ),
-                    ),
-                },
-            ],
+                    },
+                ],
+            }),
         }),
     )
     .await?;
